@@ -40,15 +40,6 @@ if (args.SequenceEqual(new[] { "--export-calendar" }))
     return;
 }
 
-if (args.SequenceEqual(new[] { "--export-calendar" }))
-{
-    var path = Path.Combine(builder.Environment.ContentRootPath, "bin", "flatduty-backup.ics");
-    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-    await File.WriteAllTextAsync(path, CalendarFallback.Export(new CollectionSchedule(builder.Configuration), TimeProvider.System));
-    Console.WriteLine($"Calendar file: {path}");
-    return;
-}
-
 var connection = builder.Configuration.GetConnectionString("Default");
 if (string.IsNullOrWhiteSpace(connection))
     throw new InvalidOperationException("Set ConnectionStrings__Default in .env or the process environment.");
