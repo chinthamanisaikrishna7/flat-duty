@@ -4,10 +4,57 @@ using Microsoft.Data.SqlClient;
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Configuration.Memory;
 
 var builder = WebApplication.CreateBuilder(args);
-var connection = builder.Configuration.GetConnectionString("Default") ?? throw new Exception("Missing ConnectionStrings__Default");
-var token = builder.Configuration["BotToken"] ?? throw new Exception("Missing BotToken");
+// Compose supplies environment variables. For a direct launch, use .env as defaults.
+var envPath = Path.Combine(builder.Environment.ContentRootPath, ".env");
+if (File.Exists(envPath))
+{
+    using var stream = File.OpenRead(envPath);
+    using var defaults = new ConfigurationManager();
+    defaults.AddIniStream(stream);
+    var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+    foreach (var entry in defaults.AsEnumerable())
+    {
+        var value = entry.Value;
+        if (value is { Length: >= 2 } && value[0] == '\'' && value[^1] == '\'')
+            value = value[1..^1];
+        values[entry.Key.Replace("__", ":")] = value;
+    }
+    builder.Configuration.Sources.Insert(0, new MemoryConfigurationSource { InitialData = values });
+}
+
+var connection = builder.Configuration.GetConnectionString("Default");
+if (string.IsNullOrWhiteSpace(connection))
+    throw new InvalidOperationException("Set ConnectionStrings__Default in .env or the process environment.");
+
+if (args.Contains("--check-db"))
+{
+    try
+    {
+        await using var db = new SqlConnection(connection);
+        await db.OpenAsync();
+        using var probe = new SqlCommand("SELECT 1", db);
+        await probe.ExecuteScalarAsync();
+        Console.WriteLine("Connected to the configured SQL Server database.");
+    }
+    catch (SqlException ex)
+    {
+        Console.Error.WriteLine($"SQL connection failed (SQL error {ex.Number}). Check that the instance is running, the database exists, and the login has access.");
+        Environment.ExitCode = 1;
+    }
+    catch (ArgumentException)
+    {
+        Console.Error.WriteLine("Invalid SQL connection string. Check the field names and quoting in ConnectionStrings__Default.");
+        Environment.ExitCode = 1;
+    }
+    return;
+}
+
+var token = builder.Configuration["BotToken"];
+if (string.IsNullOrWhiteSpace(token) || token == "YOUR_BOT_TOKEN")
+    throw new InvalidOperationException("Set BotToken to your Telegram bot token in .env or the process environment.");
 var members = builder.Configuration.GetSection("Members").Get<Member[]>() ?? [];
 if (members.Length != 6 || members.Select(m => m.ChatId).Distinct().Count() != 6 || members.Any(m => m.ChatId <= 0 || string.IsNullOrWhiteSpace(m.Name))) throw new Exception("Configure six distinct private Telegram chat IDs and names.");
 var cutoff = TimeOnly.Parse(builder.Configuration["Cutoff"] ?? "08:00");
