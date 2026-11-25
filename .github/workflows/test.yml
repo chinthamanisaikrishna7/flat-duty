@@ -1,0 +1,39 @@
+name: Test FlatDuty
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Start disposable SQL Server
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MSSQL_SA_PASSWORD="Aa1!$(openssl rand -hex 24)"
+          echo "::add-mask::$MSSQL_SA_PASSWORD"
+          docker run -d --name flatduty-test -p 127.0.0.1:1433:1433 \
+            -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD mcr.microsoft.com/mssql/server:2022-latest
+          for attempt in {1..60}; do
+            if docker exec -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" flatduty-test \
+              /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -l 2 -Q 'SELECT 1' >/dev/null 2>&1; then
+              echo "FLATDUTY_TEST_SQL=Server=127.0.0.1,1433;User ID=sa;Password=$MSSQL_SA_PASSWORD;TrustServerCertificate=True" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "SQL Server did not become ready."
+          exit 1
+      - name: Build and run workflow tests
+        run: dotnet test tests/FlatDuty.Tests --configuration Release

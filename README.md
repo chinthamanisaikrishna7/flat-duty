@@ -3,11 +3,18 @@ A backend-first household waste collection assistant for six flatmates. Collecti
 
 ## Run locally on Windows
 
-1. Open PowerShell in the repository root. Keep your existing `.env`. For a fresh checkout, run `Copy-Item .env.example .env`. The app reads the key/value format shown in the example. Process environment variables take precedence.
-2. Start the SQL Server instance. For a local default instance, connect to `localhost` in SSMS using Windows Authentication. In a query window, run `IF DB_ID(N'FlatDuty') IS NULL CREATE DATABASE [FlatDuty];`. The account running the app needs access to that database and permission to create the application tables and Hangfire schema. For a named instance, use the same server and instance name in SSMS and in `.env`.
-3. Set `ConnectionStrings__Default` in `.env`. For a local default instance with a development certificate, the Windows example in `.env.example` uses `Integrated Security=True`. Run `dotnet run --no-launch-profile -- --check-db` to verify access. This opens the configured database and executes `SELECT 1` without starting jobs or contacting Telegram.
-4. Create a bot with Telegram's @BotFather. Have each of the six flatmates open a **private chat** with the bot and press **Start**. While FlatDuty is stopped, use the Telegram Bot API's `getUpdates` method privately to obtain each person's `message.chat.id`. Set `BotToken`, the six `Members__N__Name` values and their six distinct positive `Members__N__ChatId` values in `.env` (indices 0 through 5). If the bot previously used a webhook, remove it before polling.
-5. Run `dotnet run --no-launch-profile -- --urls http://localhost:5080`. Open <http://localhost:5080/> for the liveness message. Leave the app running for scheduled jobs. Stop with Ctrl+C.
+1. Open PowerShell in the checkout containing `MemberRegistration.cs`. Run `dotnet --version` and check for a 10.x SDK. To try the schedule immediately, run `dotnet run --no-launch-profile -- --simulate 2026-11-26 07:05`.
+2. Open [BotFather in Telegram](https://t.me/BotFather), press **Start**, send `/newbot`, and follow the prompts. Save the **username** for invite links and the **token** for the application. Keep the token private.
+3. Open SQL Server Management Studio (SSMS). Connect to `localhost` with **Windows Authentication** for a default local SQL Server instance. Open **New Query** and run `IF DB_ID(N'FlatDuty') IS NULL CREATE DATABASE [FlatDuty];`. The application creates its tables at startup. Use a Windows account with permission to create the application tables and Hangfire schema in this database. If SSMS cannot connect, check that **SQL Server (MSSQLSERVER)** is running in Windows Services. For a named instance, use its full server name in SSMS and the connection string.
+4. Open the repository's `.env` in a local editor. For a fresh checkout, run `if (!(Test-Path .env)) { Copy-Item .env.example .env }` first. Enter the bot token as `BotToken`, replace the six `Members__N__Name` values with the flatmates’ names (including yours), and leave each `ChatId=0`. Existing installations with positive IDs can keep them. For SQL, use your existing connection string or the local Windows example in `.env.example`. Keep a single active `ConnectionStrings__Default` line.
+5. Run `dotnet run --no-launch-profile -- --check-db`. Wait for `Connected to the configured SQL Server database.` before continuing.
+6. Run `dotnet run --no-launch-profile -- --invites YourBotUsernameBot`, replacing the example with the username from step 2. FlatDuty prints a personal link beside each unregistered name. Send the matching link privately to each flatmate and keep yours. Re-running this command replaces **all outstanding** links. Flatmates who already joined stay registered.
+7. Run `dotnet run --no-launch-profile -- --urls http://localhost:5080`. Leave the terminal open. Each flatmate opens their link in Telegram and presses **Start**. Within about a minute the bot should reply with the registered name and how many people have joined. Sending `/start` again shows the current count. Check for **6/6**. Scheduled duties start once all six have joined and an assignment or reminder window is open.
+8. Open <http://localhost:5080/> to check whether the app is running. The laptop and SQL Server must stay awake for scheduled reminders. Use Ctrl+C to stop the app. Registrations survive restarts. A new bot can poll immediately. If reusing a bot, remove any existing webhook and stop any other poller first.
+
+### How enrollment works
+
+Six numbered slots correspond to the names in configuration. SQL stores the hash of each outstanding invitation and the Telegram chat ID once claimed. A private **Start** binds one account to one slot. A repeated Start returns that person's registration status. Keep the slot order stable after enrollment so names continue to match their owners.
 
 ## Run with Docker Compose
 
@@ -17,6 +24,24 @@ Run `docker compose up -d --build` and follow startup with `docker compose logs 
 
 See the [development tracker](docs/development-tracker.md) for planned work.
 
+## Simulate a collection day
+
+Run this from the repository root with the .NET 10 SDK. The simulation uses the worker’s schedule and prints times in IST. It runs locally without SQL, Hangfire, a bot token, or any messages to flatmates.
+
+```powershell
+dotnet run --no-launch-profile -- --simulate 2026-11-26 07:05
+```
+
+This shows Wednesday’s 21:00 assignment, Thursday’s owner reminders from 06:30, the first backup reminder at 07:00, and confirmation at 07:05. Omit the confirmation time to see the complete timeline through cutoff. The preview models an authorized confirmation at the supplied time. The live bot processes confirmations when it polls Telegram.
+
+To change the schedule, edit the optional `Schedule__CollectionDays`, `Schedule__AssignmentTime`, `Schedule__ReminderStart`, `Schedule__BackupTime`, `Schedule__IntervalMinutes`, and `Cutoff` settings shown in `.env.example` and restart the app. Enter full weekday names and 24-hour times. The existing `Cutoff` setting still works. If backup starts between reminder slots, its first reminder is due at the backup time and its interval starts there.
+
+## Automated tests
+
+Run `dotnet test tests/FlatDuty.Tests`. Schedule tests run offline. For the database workflow test, set `FLATDUTY_TEST_SQL` to a **test SQL Server** connection string whose login can create databases. The test creates a uniquely named database, runs the production worker against it with a fake clock and simulated Telegram responses, then drops that database. It exercises restart recovery, rotation, reminder deduplication, escalation, completion authorization, and cutoff. Without that variable, the runner reports the database test as skipped.
+
+The GitHub Actions test workflow provisions SQL Server for this check on feature-branch pushes, main pushes, and pull requests. Deployment is still planned.
+
 ## Current behavior and limits
 - The assignment and rotation are persisted transactionally; missed evening jobs can recover in the morning. No backlog of obsolete reminder slots is sent.
 - Confirmation is accepted from the assigned owner or backup on the collection day. Polling can take about a minute; a reminder already in flight may still arrive.
@@ -25,4 +50,4 @@ See the [development tracker](docs/development-tracker.md) for planned work.
 - Keep one bot consumer and one app deployment for this MVP. Do not change the member roster mid-cycle without reviewing rotation state.
 
 ## Acceptance checks before relying on it
-Build with `dotnet build` or Docker. In a disposable database, verify evening selection, six unique owners per rotation, morning reminders, backup escalation, authorized completion, rejection of another user's callback, restart recovery, cutoff and Telegram outage behavior. Test with temporary schedule changes before production use. Confirm actual collection time with flatmates.
+Before relying on the bot, run a collection cycle with a test bot and disposable database under Hangfire. Verify that the owner and backup receive the expected messages, that a real button press stops reminders, and that a Telegram outage can recover before cutoff. Confirm the actual collection time with flatmates.
