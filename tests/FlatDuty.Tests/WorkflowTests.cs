@@ -34,7 +34,9 @@ public class WorkflowTests
             server.InitialCatalog = database;
             await DutyDatabase.InitializeAsync(server.ConnectionString);
             var roster = Enumerable.Range(1, 6).Select(id => new Member($"Member {id}", id)).ToArray();
-            var config = new DutyConfig(server.ConnectionString, "test", roster);
+            var configured = roster.Select((member, index) => index == 0 ? member : member with { ChatId = 0 }).ToArray();
+            await MemberRegistration.InitializeAsync(server.ConnectionString, configured);
+            var config = new DutyConfig(server.ConnectionString, "test", configured);
             var clock = new CollectionClock();
             var schedule = new CollectionSchedule(new ConfigurationBuilder().Build());
             using var telegram = new FakeTelegram();
@@ -45,6 +47,28 @@ public class WorkflowTests
 
             // Recover a missed Wednesday assignment at the first Thursday morning tick.
             clock.SetIndiaTime(day.AddHours(6).AddMinutes(30));
+            await worker.Tick();
+            Assert.Empty(telegram.Recipients);
+            var previous = await MemberRegistration.IssueInvitesAsync(server.ConnectionString, configured, "FlatDutyTestBot");
+            var invites = await MemberRegistration.IssueInvitesAsync(server.ConnectionString, configured, "FlatDutyTestBot");
+            Assert.Null(invites[0].Link);
+            static string Code(string link) => new Uri(link).Query.Split('=')[1];
+            telegram.Start(42, Code(previous[1].Link!));
+            telegram.Start(2, Code(invites[1].Link!));
+            telegram.Start(2, Code(invites[1].Link!)); // repeated Start on a claimed link
+            telegram.Start(42, Code(invites[1].Link!)); // another person cannot reuse it
+            telegram.Start(2, Code(invites[2].Link!)); // one person cannot occupy two slots
+            for (var i = 2; i < roster.Length; i++)
+                telegram.Start(roster[i].ChatId, Code(invites[i].Link!));
+            await worker.Inbox();
+            Assert.StartsWith("Open your personal invite", telegram.Messages[0]);
+            Assert.Equal(telegram.Messages[1], telegram.Messages[2]);
+            Assert.StartsWith("Open your personal invite", telegram.Messages[3]);
+            Assert.Contains("Member 2", telegram.Messages[4]);
+            Assert.Contains("6/6", telegram.Messages.Last());
+            await MemberRegistration.InitializeAsync(server.ConnectionString, configured);
+            telegram.Recipients.Clear();
+            worker = StartWorker();
             await worker.Tick();
             var owner = Assert.Single(telegram.Recipients);
             worker = StartWorker();
@@ -98,8 +122,16 @@ public class WorkflowTests
     private sealed class FakeTelegram : HttpMessageHandler
     {
         public List<long> Recipients { get; } = [];
+        public List<string> Messages { get; } = [];
         public List<string> Acknowledgements { get; } = [];
         private readonly List<object> updates = [];
+
+        public void Start(long id, string code)
+        {
+            updates.Add(new { update_id = updates.Count + 1, message = new {
+                chat = new { id, type = "private" }, from = new { id, is_bot = false }, text = $"/start {code}"
+            } });
+        }
 
         public void Confirm(long id, string day)
         {
@@ -115,6 +147,7 @@ public class WorkflowTests
             {
                 case "sendMessage":
                     Recipients.Add(body.GetProperty("chat_id").GetInt64());
+                    Messages.Add(body.GetProperty("text").GetString()!);
                     break;
                 case "getUpdates":
                     var offset = body.GetProperty("offset").GetInt32();
