@@ -44,11 +44,25 @@ Run `dotnet test tests/FlatDuty.Tests`. Schedule tests run offline. For the data
 
 The GitHub Actions test workflow provisions SQL Server for this check on feature-branch pushes, main pushes, and pull requests. Deployment is still planned.
 
+## Telegram delivery and missed duties
+
+Start the updated app once to create the outbox table in the configured database. The scheduler records the current notification slot and assigned recipient in the same SQL transaction as the duty. The worker claims that slot before contacting Telegram, then records the result. After a restart it can reclaim an interrupted attempt after two minutes if the slot is still current. A temporary failure gets up to three attempts per slot. A Telegram rate limit with a retry interval pauses duty sends across slots. A rejected recipient ends that slot. The regular backup schedule still applies.
+
+Run `dotnet run --no-launch-profile -- --duty-report` to inspect the past seven calendar days and any assignment for tomorrow. It distinguishes confirmed disposal, unconfirmed duties after cutoff, and scheduled dates without an assignment. Delivery totals cover slots recorded since the outbox was installed. Unacknowledged slots can include expired or interrupted attempts. Only the current slot of an open duty can be sent. Historical dates without a duty are evaluated using the current schedule.
+
+## Google Calendar fallback
+
+Run `dotnet run --no-launch-profile -- --export-calendar` to write `bin/flatduty-backup.ics`. The file contains one recurring check per collection day at the configured backup time (Thursday and Sunday at 07:00 IST by default). It contains no account details and the exporter works without SQL or Telegram.
+
+On a computer, open Google Calendar **Settings → Import & export → Import**, select the file, and choose a calendar. Each flatmate who wants the fallback can import it into their own calendar. Open the imported series, verify the local time, and set a notification at the event time for the series. Check that Google Calendar notifications are enabled on the device. [Import events](https://support.google.com/calendar/answer/37118) · [Notification settings](https://support.google.com/calendar/answer/37242).
+
+Calendar runs this household check independently of FlatDuty and can still alert after someone confirms disposal. The event asks the household to check once. Owner assignment, escalation, and completion remain in Telegram. If the collection schedule changes, remove the old series and import a fresh export.
+
 ## Current behavior and limits
 - The assignment and rotation are persisted transactionally; missed evening jobs can recover in the morning. No backlog of obsolete reminder slots is sent.
 - Confirmation is accepted from the assigned owner or backup on the collection day. Polling can take about a minute; a reminder already in flight may still arrive.
-- Hangfire retries failed jobs. Delivery is at-least-once: a crash after Telegram accepts a message but before SQL records it can duplicate a reminder. No claim of exactly-once delivery.
-- At cutoff the worker stops sending; it does not currently publish a missed-duty report. No dashboard, calendar integration, onboarding UI, or phone calls yet.
+- A crash between Telegram accepting a message and SQL recording the delivery can duplicate a reminder. An outage lasting past cutoff can prevent delivery altogether.
+- At cutoff the worker stops sending. The duty report is available locally on demand.
 - Keep one bot consumer and one app deployment for this MVP. Do not change the member roster mid-cycle without reviewing rotation state.
 
 ## Acceptance checks before relying on it
