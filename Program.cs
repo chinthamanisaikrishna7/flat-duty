@@ -31,6 +31,15 @@ if (args.Contains("--simulate"))
     return;
 }
 
+if (args.SequenceEqual(new[] { "--export-calendar" }))
+{
+    var path = Path.Combine(builder.Environment.ContentRootPath, "bin", "flatduty-backup.ics");
+    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+    await File.WriteAllTextAsync(path, CalendarFallback.Export(new CollectionSchedule(builder.Configuration), TimeProvider.System));
+    Console.WriteLine($"Calendar file: {path}");
+    return;
+}
+
 var connection = builder.Configuration.GetConnectionString("Default");
 if (string.IsNullOrWhiteSpace(connection))
     throw new InvalidOperationException("Set ConnectionStrings__Default in .env or the process environment.");
@@ -55,6 +64,13 @@ if (args.Contains("--check-db"))
         Console.Error.WriteLine("Invalid SQL connection string. Check the field names and quoting in ConnectionStrings__Default.");
         Environment.ExitCode = 1;
     }
+    return;
+}
+
+if (args.SequenceEqual(new[] { "--duty-report" }))
+{
+    await DutyReport.WriteAsync(connection, new CollectionSchedule(builder.Configuration),
+        CollectionSchedule.IndiaTime(TimeProvider.System), Console.Out);
     return;
 }
 
@@ -119,7 +135,7 @@ public class DutyWorker(DutyConfig cfg, HttpClient http, TimeProvider clock, Col
   var slot = schedule.At(LocalNow);
   if (slot is null) return;
   var day = slot.Day;
-  var key = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
   await using var db=await Open();
   var chats = await MemberRegistration.RegisteredChatsAsync(db);
   if (chats.Length != 6) return;
@@ -142,30 +158,10 @@ public class DutyWorker(DutyConfig cfg, HttpClient http, TimeProvider clock, Col
     await Q("UPDATE dbo.Rotation SET Used=1 WHERE ChatId=@id",("@id",owner));
     await Q("INSERT dbo.Duties(Day,OwnerId,BackupId) VALUES(@d,@o,@b)",("@d",day),("@o",owner),("@b",backup));
    }
+   await DutyOutbox.EnqueueAsync(db, tx, slot);
    await tx.CommitAsync();
   }
-  long ownerId, backupId;
-  using (var readDuty = Cmd(db, "SELECT OwnerId,BackupId,Completed,LastSlot FROM dbo.Duties WHERE Day=@d", ("@d", day)))
-  {
-      await using var reader = await readDuty.ExecuteReaderAsync();
-      await reader.ReadAsync();
-      if (reader.GetBoolean(2) || (!reader.IsDBNull(3) && reader.GetString(3) == slot.Key)) return;
-      ownerId = reader.GetInt64(0);
-      backupId = reader.GetInt64(1);
-  }
-  var target = slot.Phase == DutyPhase.BackupReminder ? backupId : ownerId;
-  var message = slot.Phase switch
-  {
-      DutyPhase.Assignment => $"You have waste duty tomorrow ({key}). Please prepare wet and dry waste tonight.",
-      DutyPhase.BackupReminder => $"Waste collection today ({key}). Backup duty: please help. Confirm only after disposal.",
-      _ => $"Waste collection today ({key}). Confirm only after disposal."
-  };
-  using var checkCompletion = Cmd(db, "SELECT Completed FROM dbo.Duties WHERE Day=@d", ("@d", day));
-  if (Convert.ToBoolean(await checkCompletion.ExecuteScalarAsync())) return;
-  if (schedule.At(LocalNow) != slot) return;
-  await telegram.SendAsync(target, message, key);
-  using var recordDelivery = Cmd(db, "UPDATE dbo.Duties SET LastSlot=@s WHERE Day=@d", ("@s", slot.Key), ("@d", day));
-  await recordDelivery.ExecuteNonQueryAsync();
+  await DutyOutbox.DeliverAsync(db, slot, schedule, clock, telegram, logger);
  }
  [DisableConcurrentExecution(120)]
  public async Task Inbox() {

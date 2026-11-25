@@ -69,6 +69,13 @@ public class WorkflowTests
             await MemberRegistration.InitializeAsync(server.ConnectionString, configured);
             telegram.Recipients.Clear();
             worker = StartWorker();
+            telegram.NextSendFailure = HttpStatusCode.ServiceUnavailable;
+            await worker.Tick();
+            Assert.Empty(telegram.Recipients);
+            worker = StartWorker();
+            await worker.Tick();
+            Assert.Empty(telegram.Recipients);
+            clock.SetIndiaTime(day.AddHours(6).AddMinutes(31));
             await worker.Tick();
             var owner = Assert.Single(telegram.Recipients);
             worker = StartWorker();
@@ -101,9 +108,18 @@ public class WorkflowTests
                 Assert.True(owners.Add(telegram.Recipients.Last()));
             }
             var beforeCutoff = telegram.Recipients.Count;
+            clock.SetIndiaTime(day.AddHours(7).AddMinutes(58));
+            telegram.NextSendFailure = HttpStatusCode.Forbidden;
+            await worker.Tick();
+            clock.SetIndiaTime(day.AddHours(7).AddMinutes(59));
+            await worker.Tick();
+            Assert.Equal(beforeCutoff, telegram.Recipients.Count);
             clock.SetIndiaTime(day.AddHours(8));
             await worker.Tick();
             Assert.Equal(beforeCutoff, telegram.Recipients.Count);
+            using var report = new StringWriter();
+            await DutyReport.WriteAsync(server.ConnectionString, schedule, day.AddHours(8), report);
+            Assert.Contains($"{day:yyyy-MM-dd} | Unconfirmed after cutoff | 1 / 1 / 0", report.ToString());
         }
         finally
         {
@@ -121,6 +137,7 @@ public class WorkflowTests
 
     private sealed class FakeTelegram : HttpMessageHandler
     {
+        public HttpStatusCode? NextSendFailure { get; set; }
         public List<long> Recipients { get; } = [];
         public List<string> Messages { get; } = [];
         public List<string> Acknowledgements { get; } = [];
@@ -146,6 +163,11 @@ public class WorkflowTests
             switch (request.RequestUri!.Segments.Last())
             {
                 case "sendMessage":
+                    if (NextSendFailure is { } failure)
+                    {
+                        NextSendFailure = null;
+                        return new HttpResponseMessage(failure) { Content = JsonContent.Create(new { ok = false }) };
+                    }
                     Recipients.Add(body.GetProperty("chat_id").GetInt64());
                     Messages.Add(body.GetProperty("text").GetString()!);
                     break;

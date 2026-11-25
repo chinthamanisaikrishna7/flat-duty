@@ -9,6 +9,18 @@ public static class DutyDatabase
         using var command = new SqlCommand("""
         IF OBJECT_ID('dbo.Duties') IS NULL CREATE TABLE dbo.Duties (Day date PRIMARY KEY, OwnerId bigint NOT NULL, BackupId bigint NOT NULL, Completed bit NOT NULL DEFAULT 0, LastSlot varchar(32) NULL);
         IF OBJECT_ID('dbo.Rotation') IS NULL CREATE TABLE dbo.Rotation (ChatId bigint PRIMARY KEY, Used bit NOT NULL DEFAULT 0);
+        IF OBJECT_ID('dbo.DutyNotifications') IS NULL
+            CREATE TABLE dbo.DutyNotifications (
+                Day date NOT NULL REFERENCES dbo.Duties(Day),
+                Slot varchar(32) NOT NULL,
+                Recipient bigint NOT NULL,
+                State varchar(10) NOT NULL DEFAULT 'Pending',
+                Attempts int NOT NULL DEFAULT 0,
+                NextAttemptUtc datetime2 NULL,
+                ThrottleUntilUtc datetime2 NULL,
+                LastHttpStatus int NULL,
+                PRIMARY KEY (Day, Slot)
+            );
         IF OBJECT_ID('dbo.BotState') IS NULL CREATE TABLE dbo.BotState (Id int PRIMARY KEY, NextOffset bigint NOT NULL);
         IF NOT EXISTS (SELECT 1 FROM dbo.BotState WHERE Id=1) INSERT dbo.BotState VALUES (1,0);
         IF OBJECT_ID('dbo.MemberRegistrations') IS NULL
