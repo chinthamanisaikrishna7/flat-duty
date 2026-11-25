@@ -1,6 +1,6 @@
 # FlatDuty development tracker
 
-8 of 15 tasks complete. Build and integration testing stays open until the collection workflow has passed an end-to-end test.
+9 of 15 tasks implemented. Build and integration testing stays open until the collection workflow has passed an end-to-end test.
 
 - [x] Initial project setup and Git history
 - [x] Fair random duty assignment
@@ -10,7 +10,7 @@
 - [x] Backup escalation
 - [x] Docker configuration
 - [ ] Build and integration testing
-- [ ] Telegram self-service registration
+- [x] Telegram self-service registration (personal invite links, pending a live household trial)
 - [x] Test mode for simulating collection days
 - [ ] Reliable notification outbox
 - [ ] Google Calendar fallback
@@ -18,4 +18,4 @@
 - [ ] GCP deployment
 - [ ] Web dashboard (optional)
 
-The simulation runs offline and uses the same IST schedule as the live worker. The automated test suite includes an opt-in SQL workflow test with a simulated Telegram API. GitHub Actions is configured to run it with a disposable SQL Server. The hosted run, a live Telegram acceptance test, and deployment are pending.
+The simulation runs offline and uses the same IST schedule as the live worker. The opt-in SQL workflow test covers registration, link reissue and replay, six-member activation, and the reminder cycle using a simulated Telegram API. GitHub Actions is configured to run it with a disposable SQL Server. The hosted run, a live Telegram acceptance test, and deployment are pending.
