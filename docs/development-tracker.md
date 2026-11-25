@@ -1,6 +1,6 @@
 # FlatDuty development tracker
 
-9 of 15 tasks implemented. Build and integration testing stays open until the collection workflow has passed an end-to-end test.
+11 of 15 tasks implemented. Build and integration testing stays open until the collection workflow has passed an end-to-end test.
 
 - [x] Initial project setup and Git history
 - [x] Fair random duty assignment
@@ -12,8 +12,8 @@
 - [ ] Build and integration testing
 - [x] Telegram self-service registration (personal invite links, pending a live household trial)
 - [x] Test mode for simulating collection days
-- [ ] Reliable notification outbox
-- [ ] Google Calendar fallback
+- [x] Reliable notification outbox (SQL integration run pending)
+- [x] Google Calendar fallback (offline calendar export, household import pending)
 - [ ] GitHub Actions CI/CD
 - [ ] GCP deployment
 - [ ] Web dashboard (optional)
