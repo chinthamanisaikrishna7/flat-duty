@@ -14,6 +14,8 @@ A backend-first household waste collection assistant for six flatmates. Collecti
 
 ### How enrollment works
 
+While the bot runs, use a second terminal in the project folder and run `dotnet run --no-launch-profile -- --registrations` to list each configured name and its registration status. This read-only command leaves existing links valid. On Windows, if the running app locks the executable, run `dotnet bin/Debug/net10.0/FlatDuty.dll --registrations` with the already-built version containing this command.
+
 Six numbered slots correspond to the names in configuration. SQL stores the hash of each outstanding invitation and the Telegram chat ID once claimed. A private **Start** binds one account to one slot. A repeated Start returns that person's registration status. Keep the slot order stable after enrollment so names continue to match their owners.
 
 ## Run with Docker Compose

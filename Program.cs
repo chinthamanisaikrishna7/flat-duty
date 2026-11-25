@@ -60,6 +60,19 @@ if (args.Contains("--check-db"))
 
 var members = builder.Configuration.GetSection("Members").Get<Member[]>() ?? [];
 MemberRegistration.Validate(members);
+if (args.SequenceEqual(new[] { "--registrations" }))
+{
+    await using var db = new SqlConnection(connection);
+    await db.OpenAsync();
+    using var query = new SqlCommand("SELECT Slot FROM dbo.MemberRegistrations WHERE ChatId IS NOT NULL", db);
+    await using var rows = await query.ExecuteReaderAsync();
+    var registered = new HashSet<int>();
+    while (await rows.ReadAsync()) registered.Add(rows.GetByte(0));
+    for (int slot = 0; slot < members.Length; slot++)
+        Console.WriteLine($"{members[slot].Name}: {(registered.Contains(slot) ? "Registered" : "Waiting")}");
+    Console.WriteLine($"{registered.Count}/{members.Length} registered.");
+    return;
+}
 if (args.Contains("--invites"))
 {
     if (args.Length != 2 || args[0] != "--invites" || !MemberRegistration.ValidBotUsername(args[1].TrimStart('@')))
@@ -96,12 +109,11 @@ app.Run();
 
 public record Member(string Name, long ChatId);
 public record DutyConfig(string Connection, string Token, Member[] Members);
-public class DutyWorker(DutyConfig cfg, HttpClient http, TimeProvider clock, CollectionSchedule schedule) {
+public class DutyWorker(DutyConfig cfg, HttpClient http, TimeProvider clock, CollectionSchedule schedule, ILogger<DutyWorker>? logger = null) {
  private DateTime LocalNow => CollectionSchedule.IndiaTime(clock);
  private async Task<SqlConnection> Open() { var db = new SqlConnection(cfg.Connection); await db.OpenAsync(); return db; }
  private static SqlCommand Cmd(SqlConnection db, string sql, params (string,object)[] args) { var c = new SqlCommand(sql,db); foreach(var (k,v) in args) c.Parameters.AddWithValue(k,v); return c; }
- private async Task<JsonDocument> Bot(string method, object body) { using var r = await http.PostAsJsonAsync($"https://api.telegram.org/bot{cfg.Token}/{method}",body); if(!r.IsSuccessStatusCode) throw new HttpRequestException($"Telegram {method} failed: {(int)r.StatusCode}", null, r.StatusCode); var json=JsonDocument.Parse(await r.Content.ReadAsStringAsync()); if(!json.RootElement.GetProperty("ok").GetBoolean()) {json.Dispose(); throw new Exception("Telegram rejected request");} return json; }
- private async Task Send(long id,string message,string? day=null) { object? markup = day is null ? null : new { inline_keyboard = new[]{new[]{new {text="Waste disposed ✓",callback_data="done:"+day}}}}; using var result=await Bot("sendMessage",new {chat_id=id,text=message,reply_markup=markup}); }
+ private readonly TelegramClient telegram = new(http, cfg.Token);
  [DisableConcurrentExecution(120)]
  public async Task Tick() {
   var slot = schedule.At(LocalNow);
@@ -151,30 +163,26 @@ public class DutyWorker(DutyConfig cfg, HttpClient http, TimeProvider clock, Col
   using var checkCompletion = Cmd(db, "SELECT Completed FROM dbo.Duties WHERE Day=@d", ("@d", day));
   if (Convert.ToBoolean(await checkCompletion.ExecuteScalarAsync())) return;
   if (schedule.At(LocalNow) != slot) return;
-  await Send(target, message, key);
+  await telegram.SendAsync(target, message, key);
   using var recordDelivery = Cmd(db, "UPDATE dbo.Duties SET LastSlot=@s WHERE Day=@d", ("@s", slot.Key), ("@d", day));
   await recordDelivery.ExecuteNonQueryAsync();
  }
  [DisableConcurrentExecution(120)]
  public async Task Inbox() {
   await using var db=await Open(); var offset=Convert.ToInt64(await Cmd(db,"SELECT NextOffset FROM dbo.BotState WHERE Id=1").ExecuteScalarAsync());
-  using var json=await Bot("getUpdates",new {offset,timeout=0,allowed_updates=new[]{"callback_query","message"}});
+  using var json=await telegram.CallAsync("getUpdates",new {offset,timeout=0,allowed_updates=new[]{"callback_query","message"}});
   foreach(var update in json.RootElement.GetProperty("result").EnumerateArray()) {
    if (update.TryGetProperty("message", out var message) && JoinRequest.FromMessage(message) is { } request)
    {
        var response = await MemberRegistration.JoinAsync(db, request, cfg.Members);
-       try { await Send(request.ChatId, response); }
-       catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
-       {
-           // The sender blocked the bot after pressing Start. Continue processing other members.
-       }
+       await telegram.ReplyToRegistrationAsync(request.ChatId, response, logger);
    }
    if(update.TryGetProperty("callback_query",out var cb)) {
     var id=cb.GetProperty("from").GetProperty("id").GetInt64(); var data=cb.GetProperty("data").GetString()??""; var reply="Not authorized or invalid duty.";
     if(data.StartsWith("done:")&&DateTime.TryParseExact(data[5..],"yyyy-MM-dd",CultureInfo.InvariantCulture,DateTimeStyles.None,out var day)&&day==LocalNow.Date) {
      var changed=await Cmd(db,"UPDATE dbo.Duties SET Completed=1 WHERE Day=@d AND Completed=0 AND (OwnerId=@id OR BackupId=@id)",("@d",day),("@id",id)).ExecuteNonQueryAsync(); reply=changed==1?"Completed. Reminders stopped.":"Already completed or not your duty.";
     }
-    using var ack=await Bot("answerCallbackQuery",new {callback_query_id=cb.GetProperty("id").GetString(),text=reply});
+    using var ack=await telegram.CallAsync("answerCallbackQuery",new {callback_query_id=cb.GetProperty("id").GetString(),text=reply});
    }
    await Cmd(db,"UPDATE dbo.BotState SET NextOffset=@o WHERE Id=1",("@o",update.GetProperty("update_id").GetInt64()+1)).ExecuteNonQueryAsync();
   }
