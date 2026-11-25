@@ -17,6 +17,24 @@ Run `docker compose up -d --build` and follow startup with `docker compose logs 
 
 See the [development tracker](docs/development-tracker.md) for planned work.
 
+## Simulate a collection day
+
+Run this from the repository root with the .NET 10 SDK. The simulation uses the worker’s schedule and prints times in IST. It runs locally without SQL, Hangfire, a bot token, or any messages to flatmates.
+
+```powershell
+dotnet run --no-launch-profile -- --simulate 2026-11-26 07:05
+```
+
+This shows Wednesday’s 21:00 assignment, Thursday’s owner reminders from 06:30, the first backup reminder at 07:00, and confirmation at 07:05. Omit the confirmation time to see the complete timeline through cutoff. The preview models an authorized confirmation at the supplied time. The live bot processes confirmations when it polls Telegram.
+
+To change the schedule, edit the optional `Schedule__CollectionDays`, `Schedule__AssignmentTime`, `Schedule__ReminderStart`, `Schedule__BackupTime`, `Schedule__IntervalMinutes`, and `Cutoff` settings shown in `.env.example` and restart the app. Enter full weekday names and 24-hour times. The existing `Cutoff` setting still works. If backup starts between reminder slots, its first reminder is due at the backup time and its interval starts there.
+
+## Automated tests
+
+Run `dotnet test tests/FlatDuty.Tests`. Schedule tests run offline. For the database workflow test, set `FLATDUTY_TEST_SQL` to a **test SQL Server** connection string whose login can create databases. The test creates a uniquely named database, runs the production worker against it with a fake clock and simulated Telegram responses, then drops that database. It exercises restart recovery, rotation, reminder deduplication, escalation, completion authorization, and cutoff. Without that variable, the runner reports the database test as skipped.
+
+The GitHub Actions test workflow provisions SQL Server for this check on feature-branch pushes, main pushes, and pull requests. Deployment is still planned.
+
 ## Current behavior and limits
 - The assignment and rotation are persisted transactionally; missed evening jobs can recover in the morning. No backlog of obsolete reminder slots is sent.
 - Confirmation is accepted from the assigned owner or backup on the collection day. Polling can take about a minute; a reminder already in flight may still arrive.
@@ -25,4 +43,4 @@ See the [development tracker](docs/development-tracker.md) for planned work.
 - Keep one bot consumer and one app deployment for this MVP. Do not change the member roster mid-cycle without reviewing rotation state.
 
 ## Acceptance checks before relying on it
-Build with `dotnet build` or Docker. In a disposable database, verify evening selection, six unique owners per rotation, morning reminders, backup escalation, authorized completion, rejection of another user's callback, restart recovery, cutoff and Telegram outage behavior. Test with temporary schedule changes before production use. Confirm actual collection time with flatmates.
+Before relying on the bot, run a collection cycle with a test bot and disposable database under Hangfire. Verify that the owner and backup receive the expected messages, that a real button press stops reminders, and that a Telegram outage can recover before cutoff. Confirm the actual collection time with flatmates.
